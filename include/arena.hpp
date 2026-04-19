@@ -8,6 +8,7 @@
 #include <memory_resource>
 #include <mutex>
 #include <new>
+#include <atomic>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -35,7 +36,9 @@ struct arena_stats {
 };
 
 struct arena_marker {
-    std::uintptr_t chunk_id{};
+    std::uintptr_t chunk_handle{};
+    std::uintptr_t owner_cookie{};
+    std::uint64_t generation{};
     std::size_t offset{};
 };
 
@@ -82,6 +85,7 @@ public:
     }
 
     void reset() noexcept;
+    void reset_stats() noexcept;
 
     [[nodiscard]] arena_marker mark() const noexcept;
     void rollback(arena_marker marker) noexcept;
@@ -100,7 +104,8 @@ private:
     chunk* current_{};
     std::size_t bytes_reserved_{};
     std::size_t next_chunk_capacity_{};
-    std::uintptr_t next_chunk_id_{1};
+    std::uintptr_t owner_cookie_{};
+    std::uint64_t marker_generation_{};
     arena_stats stats_{};
     mutable lock_type lock_{};
 

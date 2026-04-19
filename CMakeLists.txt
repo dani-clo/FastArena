@@ -24,7 +24,7 @@ target_compile_features(fastarena PUBLIC cxx_std_23)
 if (MSVC)
     target_compile_options(fastarena PRIVATE /W4 /permissive-)
 else()
-    target_compile_options(fastarena PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(fastarena PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
 endif()
 
 option(FASTARENA_BUILD_EXAMPLES "Build FastArena examples" ON)

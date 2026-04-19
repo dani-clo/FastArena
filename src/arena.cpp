@@ -14,6 +14,11 @@ namespace fa {
 
 namespace {
 
+[[nodiscard]] std::uintptr_t next_owner_cookie() noexcept {
+	static std::atomic<std::uintptr_t> next_cookie{1};
+	return next_cookie.fetch_add(1, std::memory_order_relaxed);
+}
+
 [[nodiscard]] constexpr bool is_power_of_two(std::size_t value) noexcept {
 	return value != 0 && (value & (value - 1)) == 0;
 }
@@ -46,14 +51,14 @@ struct basic_arena<Policy>::chunk {
 	std::byte* data{};
 	std::size_t capacity{};
 	std::size_t used{};
-	std::uintptr_t id{};
 	chunk* next{};
 };
 
 template <typename Policy>
 basic_arena<Policy>::basic_arena(arena_config cfg)
 	: cfg_(cfg),
-	  next_chunk_capacity_(cfg_.initial_capacity == 0 ? cfg_.min_chunk_size : cfg_.initial_capacity) {
+	  next_chunk_capacity_(cfg_.initial_capacity == 0 ? cfg_.min_chunk_size : cfg_.initial_capacity),
+	  owner_cookie_(next_owner_cookie()) {
 	if (cfg_.min_chunk_size == 0) {
 		throw std::invalid_argument("arena_config.min_chunk_size must be > 0");
 	}
@@ -89,14 +94,16 @@ basic_arena<Policy>::basic_arena(basic_arena&& other) noexcept {
 	current_ = other.current_;
 	bytes_reserved_ = other.bytes_reserved_;
 	next_chunk_capacity_ = other.next_chunk_capacity_;
-	next_chunk_id_ = other.next_chunk_id_;
+	owner_cookie_ = other.owner_cookie_;
+	marker_generation_ = other.marker_generation_;
 	stats_ = other.stats_;
 
 	other.head_ = nullptr;
 	other.current_ = nullptr;
 	other.bytes_reserved_ = 0;
 	other.next_chunk_capacity_ = other.cfg_.min_chunk_size;
-	other.next_chunk_id_ = 1;
+	other.owner_cookie_ = next_owner_cookie();
+	other.marker_generation_ = 0;
 	other.stats_ = {};
 }
 
@@ -114,14 +121,16 @@ basic_arena<Policy>& basic_arena<Policy>::operator=(basic_arena&& other) noexcep
 	current_ = other.current_;
 	bytes_reserved_ = other.bytes_reserved_;
 	next_chunk_capacity_ = other.next_chunk_capacity_;
-	next_chunk_id_ = other.next_chunk_id_;
+	owner_cookie_ = other.owner_cookie_;
+	marker_generation_ = other.marker_generation_;
 	stats_ = other.stats_;
 
 	other.head_ = nullptr;
 	other.current_ = nullptr;
 	other.bytes_reserved_ = 0;
 	other.next_chunk_capacity_ = other.cfg_.min_chunk_size;
-	other.next_chunk_id_ = 1;
+	other.owner_cookie_ = next_owner_cookie();
+	other.marker_generation_ = 0;
 	other.stats_ = {};
 
 	return *this;
@@ -177,6 +186,13 @@ void basic_arena<Policy>::reset() noexcept {
 		it->used = 0;
 	}
 	current_ = head_;
+	marker_generation_ += 1;
+}
+
+template <typename Policy>
+void basic_arena<Policy>::reset_stats() noexcept {
+	std::scoped_lock lock(lock_);
+	stats_ = {};
 }
 
 template <typename Policy>
@@ -185,24 +201,26 @@ arena_marker basic_arena<Policy>::mark() const noexcept {
 	if (current_ == nullptr) {
 		return {};
 	}
-	return {.chunk_id = current_->id, .offset = current_->used};
+	return {
+		.chunk_handle = reinterpret_cast<std::uintptr_t>(current_),
+		.owner_cookie = owner_cookie_,
+		.generation = marker_generation_,
+		.offset = current_->used,
+	};
 }
 
 template <typename Policy>
 void basic_arena<Policy>::rollback(arena_marker marker) noexcept {
 	std::scoped_lock lock(lock_);
-	if (marker.chunk_id == 0 || head_ == nullptr) {
+	if (marker.chunk_handle == 0 || head_ == nullptr) {
+		return;
+	}
+	if (marker.owner_cookie != owner_cookie_ || marker.generation != marker_generation_) {
 		return;
 	}
 
-	chunk* target = nullptr;
-	for (chunk* it = head_; it != nullptr; it = it->next) {
-		if (it->id == marker.chunk_id) {
-			target = it;
-			break;
-		}
-	}
-	if (target == nullptr || marker.offset > target->capacity) {
+	chunk* target = reinterpret_cast<chunk*>(marker.chunk_handle);
+	if (target == nullptr || marker.offset > target->used) {
 		return;
 	}
 
@@ -221,6 +239,7 @@ std::size_t basic_arena<Policy>::bytes_requested() const noexcept {
 
 template <typename Policy>
 std::size_t basic_arena<Policy>::bytes_allocated() const noexcept {
+	std::scoped_lock lock(lock_);
 	std::size_t used = 0;
 	for (chunk* it = head_; it != nullptr; it = it->next) {
 		used += it->used;
@@ -290,7 +309,7 @@ typename basic_arena<Policy>::chunk* basic_arena<Policy>::make_chunk(std::size_t
 		data = static_cast<std::byte*>(::operator new(capacity));
 	}
 
-	auto* node = new chunk{.data = data, .capacity = capacity, .used = 0, .id = next_chunk_id_++, .next = nullptr};
+	auto* node = new chunk{.data = data, .capacity = capacity, .used = 0, .next = nullptr};
 	bytes_reserved_ += capacity;
 
 	const std::size_t grown = saturating_mul(capacity, cfg_.growth_factor);
