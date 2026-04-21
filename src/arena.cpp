@@ -153,7 +153,8 @@ void* basic_arena<Policy>::allocate(std::size_t size, std::size_t alignment) {
 		stats_.bytes_requested = checked_add(stats_.bytes_requested, size);
 		stats_.bytes_allocated = checked_add(stats_.bytes_allocated, size + padding);
 		stats_.wasted_bytes = checked_add(stats_.wasted_bytes, padding);
-		stats_.peak_bytes_used = std::max(stats_.peak_bytes_used, bytes_allocated());
+		used_bytes_ = checked_add(used_bytes_, size + padding);
+		stats_.peak_bytes_used = std::max(stats_.peak_bytes_used, used_bytes_);
 		return ptr;
 	}
 
@@ -175,7 +176,8 @@ void* basic_arena<Policy>::allocate(std::size_t size, std::size_t alignment) {
 	stats_.bytes_requested = checked_add(stats_.bytes_requested, size);
 	stats_.bytes_allocated = checked_add(stats_.bytes_allocated, size + padding);
 	stats_.wasted_bytes = checked_add(stats_.wasted_bytes, padding);
-	stats_.peak_bytes_used = std::max(stats_.peak_bytes_used, bytes_allocated());
+	used_bytes_ = checked_add(used_bytes_, size + padding);
+	stats_.peak_bytes_used = std::max(stats_.peak_bytes_used, used_bytes_);
 	return ptr;
 }
 
@@ -187,6 +189,7 @@ void basic_arena<Policy>::reset() noexcept {
 	}
 	current_ = head_;
 	marker_generation_ += 1;
+	used_bytes_ = 0;
 }
 
 template <typename Policy>
@@ -220,14 +223,17 @@ void basic_arena<Policy>::rollback(arena_marker marker) noexcept {
 	}
 
 	chunk* target = reinterpret_cast<chunk*>(marker.chunk_handle);
-	if (target == nullptr || marker.offset > target->used) {
+	if (target == nullptr || !owns_chunk(target) || marker.offset > target->used) {
 		return;
 	}
 
+	std::size_t released = target->used - marker.offset;
 	target->used = marker.offset;
 	for (chunk* it = target->next; it != nullptr; it = it->next) {
+		released += it->used;
 		it->used = 0;
 	}
+	used_bytes_ -= released;
 	current_ = target;
 }
 
@@ -240,11 +246,7 @@ std::size_t basic_arena<Policy>::bytes_requested() const noexcept {
 template <typename Policy>
 std::size_t basic_arena<Policy>::bytes_allocated() const noexcept {
 	std::scoped_lock lock(lock_);
-	std::size_t used = 0;
-	for (chunk* it = head_; it != nullptr; it = it->next) {
-		used += it->used;
-	}
-	return used;
+	return used_bytes_;
 }
 
 template <typename Policy>
@@ -257,10 +259,7 @@ template <typename Policy>
 arena_stats basic_arena<Policy>::stats() const noexcept {
 	std::scoped_lock lock(lock_);
 	arena_stats copy = stats_;
-	copy.chunk_count = 0;
-	for (chunk* it = head_; it != nullptr; it = it->next) {
-		copy.chunk_count += 1;
-	}
+	copy.chunk_count = chunk_count_;
 	return copy;
 }
 
@@ -309,12 +308,35 @@ typename basic_arena<Policy>::chunk* basic_arena<Policy>::make_chunk(std::size_t
 		data = static_cast<std::byte*>(::operator new(capacity));
 	}
 
-	auto* node = new chunk{.data = data, .capacity = capacity, .used = 0, .next = nullptr};
+	chunk* node = nullptr;
+	try {
+		node = new chunk{.data = data, .capacity = capacity, .used = 0, .next = nullptr};
+	} catch (...) {
+		if (cfg_.backing_alloc == backing::mmap) {
+#if defined(__linux__)
+			::munmap(data, capacity);
+#endif
+		} else {
+			::operator delete(data);
+		}
+		throw;
+	}
 	bytes_reserved_ += capacity;
+	chunk_count_ += 1;
 
 	const std::size_t grown = saturating_mul(capacity, cfg_.growth_factor);
 	next_chunk_capacity_ = std::clamp(grown, cfg_.min_chunk_size, cfg_.max_chunk_size);
 	return node;
+}
+
+template <typename Policy>
+bool basic_arena<Policy>::owns_chunk(const chunk* candidate) const noexcept {
+	for (chunk* it = head_; it != nullptr; it = it->next) {
+		if (it == candidate) {
+			return true;
+		}
+	}
+	return false;
 }
 
 template <typename Policy>
@@ -336,12 +358,20 @@ void basic_arena<Policy>::destroy_chunks() noexcept {
 	head_ = nullptr;
 	current_ = nullptr;
 	bytes_reserved_ = 0;
+	used_bytes_ = 0;
+	chunk_count_ = 0;
 }
 
 arena_resource::arena_resource(arena_config cfg, std::pmr::memory_resource* upstream)
 	: arena_(std::move(cfg)),
 	  upstream_(upstream == nullptr ? std::pmr::get_default_resource() : upstream),
-	  upstream_allocations_(std::pmr::polymorphic_allocator<void*>(upstream_)) {}
+	  upstream_allocations_(std::pmr::polymorphic_allocator<std::pair<const void*, upstream_allocation>>(upstream_)) {}
+
+arena_resource::~arena_resource() {
+	for (const auto& [ptr, allocation] : upstream_allocations_) {
+		upstream_->deallocate(ptr, allocation.bytes, allocation.alignment);
+	}
+}
 
 arena& arena_resource::get_arena() noexcept {
 	return arena_;
@@ -356,7 +386,7 @@ void* arena_resource::do_allocate(std::size_t bytes, std::size_t alignment) {
 		return arena_.allocate(bytes, alignment);
 	} catch (const std::bad_alloc&) {
 		void* ptr = upstream_->allocate(bytes, alignment);
-		upstream_allocations_.insert(ptr);
+		upstream_allocations_.emplace(ptr, upstream_allocation{.bytes = bytes, .alignment = alignment});
 		return ptr;
 	}
 }

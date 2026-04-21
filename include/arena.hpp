@@ -10,6 +10,7 @@
 #include <new>
 #include <atomic>
 #include <type_traits>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -106,11 +107,14 @@ private:
     std::size_t next_chunk_capacity_{};
     std::uintptr_t owner_cookie_{};
     std::uint64_t marker_generation_{};
+    std::size_t used_bytes_{};
+    std::size_t chunk_count_{};
     arena_stats stats_{};
     mutable lock_type lock_{};
 
     void* allocate_from_existing_chunks(std::size_t size, std::size_t alignment, std::size_t* padding) noexcept;
     [[nodiscard]] chunk* make_chunk(std::size_t min_size);
+    [[nodiscard]] bool owns_chunk(const chunk* candidate) const noexcept;
     void destroy_chunks() noexcept;
 };
 
@@ -122,6 +126,7 @@ public:
     explicit arena_resource(
         arena_config cfg = {},
         std::pmr::memory_resource* upstream = std::pmr::get_default_resource());
+    ~arena_resource() override;
 
     [[nodiscard]] arena& get_arena() noexcept;
     [[nodiscard]] const arena& get_arena() const noexcept;
@@ -132,9 +137,14 @@ protected:
     bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override;
 
 private:
+    struct upstream_allocation {
+        std::size_t bytes{};
+        std::size_t alignment{};
+    };
+
     arena arena_;
     std::pmr::memory_resource* upstream_;
-    std::pmr::unordered_set<void*> upstream_allocations_;
+    std::pmr::unordered_map<void*, upstream_allocation> upstream_allocations_;
 };
 
 template <typename T>
