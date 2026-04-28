@@ -65,6 +65,64 @@ Install into local prefix:
 cmake --install build --prefix build/install
 ```
 
+## Examples
+
+FastArena includes 10 focused examples, one per feature/use case. Build them with:
+
+```bash
+cmake -S . -B build -DFASTARENA_BUILD_EXAMPLES=ON
+cmake --build build --target fastarena_examples
+```
+
+**Examples overview**:
+
+| Example | Feature |
+|---------|---------|
+| `smoke.cpp` | PMR integration overview |
+| `01_basic_allocate_reset.cpp` | Basic typed allocation + reset |
+| `02_marker_rollback_frame.cpp` | Frame-based pattern (temporary data) |
+| `03_stl_allocator_vector.cpp` | STL vector with `arena_allocator<T>` |
+| `04_pmr_vector_string.cpp` | STL PMR containers on `arena_resource` |
+| `05_stats_and_growth.cpp` | Statistics and chunk growth analysis |
+| `06_linux_mmap_backing.cpp` | Linux mmap backend |
+| `07_tls_arena_multithread.cpp` | Multi-threaded `tls_arena` |
+| `08_marker_invalid_cases.cpp` | Robust marker validation (edge cases) |
+| `09_pmr_upstream_fallback.cpp` | PMR fallback allocation behavior |
+| `10_alignment_contract.cpp` | Alignment and edge-case handling |
+
+Run any example:
+
+```bash
+./build/fastarena_example
+./build/fastarena_example_01_basic_allocate_reset
+```
+
+## Benchmarks
+
+FastArena includes three comparative benchmarks against `std::allocator` (using `operator new`/`delete`):
+
+```bash
+cmake -S . -B build -DFASTARENA_BUILD_BENCHMARKS=ON
+cmake --build build --target fastarena_benchmarks
+```
+
+**Benchmarks**:
+
+1. **Small Fixed Allocations** (`bench_small_fixed`):
+   - Allocating many small, uniform-sized objects
+   - FastArena: **1.3x–2.0x faster** than std::allocator
+
+2. **Mixed Sizes** (`bench_mixed_sizes`):
+   - Realistic variable-size allocation pattern (16–1024 bytes)
+   - FastArena: **1.2x–6.0x faster**, scaling with allocation count
+
+3. **Frame Pattern** (`bench_frame_pattern`):
+   - Simulates game loop or frame-based temporary allocation
+   - Uses `mark()`/`rollback()` to reclaim frame-local data
+   - FastArena: **1.2x–1.7x faster** per frame cycle
+
+See [benchmark/README.md](benchmark/README.md) for detailed results and interpretation.
+
 ## Basic Usage
 
 ```cpp

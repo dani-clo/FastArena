@@ -31,6 +31,9 @@ option(FASTARENA_BUILD_EXAMPLES "Build FastArena examples" ON)
 option(FASTARENA_BUILD_TESTS "Build FastArena tests" ON)
 
 if (FASTARENA_BUILD_EXAMPLES)
+    add_executable(fastarena_example
+        examples/smoke.cpp
+    )
     target_link_libraries(fastarena_example PRIVATE FastArena::fastarena)
     target_compile_features(fastarena_example PRIVATE cxx_std_23)
 
@@ -68,6 +71,14 @@ if (FASTARENA_BUILD_TESTS)
     enable_testing()
     if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
         add_subdirectory(tests)
+    endif()
+endif()
+
+option(FASTARENA_BUILD_BENCHMARKS "Build FastArena benchmarks" OFF)
+
+if (FASTARENA_BUILD_BENCHMARKS)
+    if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmark")
+        add_subdirectory(benchmark)
     endif()
 endif()
 
