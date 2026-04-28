@@ -31,11 +31,37 @@ option(FASTARENA_BUILD_EXAMPLES "Build FastArena examples" ON)
 option(FASTARENA_BUILD_TESTS "Build FastArena tests" ON)
 
 if (FASTARENA_BUILD_EXAMPLES)
-    add_executable(fastarena_example
-        examples/smoke.cpp
-    )
     target_link_libraries(fastarena_example PRIVATE FastArena::fastarena)
     target_compile_features(fastarena_example PRIVATE cxx_std_23)
+
+    set(FASTARENA_EXAMPLE_SOURCES
+        examples/01_basic_allocate_reset.cpp
+        examples/02_marker_rollback_frame.cpp
+        examples/03_stl_allocator_vector.cpp
+        examples/04_pmr_vector_string.cpp
+        examples/05_stats_and_growth.cpp
+        examples/06_linux_mmap_backing.cpp
+        examples/07_tls_arena_multithread.cpp
+        examples/08_marker_invalid_cases.cpp
+        examples/09_pmr_upstream_fallback.cpp
+        examples/10_alignment_contract.cpp
+    )
+
+    set(FASTARENA_EXAMPLE_TARGETS)
+    foreach(example_source IN LISTS FASTARENA_EXAMPLE_SOURCES)
+        get_filename_component(example_name "${example_source}" NAME_WE)
+        set(example_target "fastarena_example_${example_name}")
+
+        add_executable(${example_target} ${example_source})
+        target_link_libraries(${example_target} PRIVATE FastArena::fastarena)
+        target_compile_features(${example_target} PRIVATE cxx_std_23)
+
+        list(APPEND FASTARENA_EXAMPLE_TARGETS ${example_target})
+    endforeach()
+
+    add_custom_target(fastarena_examples
+        DEPENDS fastarena_example ${FASTARENA_EXAMPLE_TARGETS}
+    )
 endif()
 
 if (FASTARENA_BUILD_TESTS)
